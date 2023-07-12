@@ -1,106 +1,127 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from 'react'
 import {
-  Space,
-  SpaceEvent,
-  getUserMedia,
-  getDisplayMedia,
-} from "@mux/spaces-web";
+  Participant,
+  ParticipantEvent,
+  RemoteParticipant,
+  RemoteTrack,
+  RemoteTrackPublication,
+  Room,
+  RoomEvent,
+  Track
+} from 'livekit-client'
 
-import Participant from "./Participant";
-import "./App.css";
-
-function App() {
-  const queryParams = new URLSearchParams(window.location.search);
+const App = () => {
+  const localParticipantVideoRef = useRef(null)
+  const [remoteParticipants, setRemoteParticipants] = useState([])
+  const queryParams = new URLSearchParams(window.location.search)
   // 🚨 Don’t forget to add your own JWT!
-  const JWT = queryParams.get("jwt");
-
-  const spaceRef = useRef(null);
-  const [localParticipant, setLocalParticipant] = useState(null);
-  const [participants, setParticipants] = useState([]);
-  const joined = !!localParticipant;
-
-  const addParticipant = useCallback(
-    (participant) => {
-      setParticipants((currentParticipants) => [
-        ...currentParticipants,
-        participant,
-      ]);
-    },
-    [setParticipants]
-  );
-
-  const removeParticipant = useCallback(
-    (participantLeaving) => {
-      setParticipants((currentParticipants) =>
-        currentParticipants.filter(
-          (currentParticipant) =>
-            currentParticipant.connectionId !== participantLeaving.connectionId
-        )
-      );
-    },
-    [setParticipants]
-  );
+  const token = queryParams.get("token")
 
   useEffect(() => {
-    const space = new Space(JWT);
+    const room = new Room({
+      adaptiveStream: true,
+      dynacast: true,
+    })
 
-    space.on(SpaceEvent.ParticipantJoined, addParticipant);
-    space.on(SpaceEvent.ParticipantLeft, removeParticipant);
+    room
+      .on(RoomEvent.ParticipantConnected, handleParticipantConnected)
+      .on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected)
+      .on(RoomEvent.TrackSubscribed, handleTrackSubscribed)
+      .on(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed)
+      .on(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakerChange)
+      .on(RoomEvent.Disconnected, handleDisconnect)
+      .on(RoomEvent.LocalTrackPublished, handleLocalTrackPublished)
+      .on(RoomEvent.LocalTrackUnpublished, handleLocalTrackUnpublished)
 
-    spaceRef.current = space;
+    const connectToRoom = async () => {
+      await room.connect('wss://mux-replacement-o289rcji.livekit.cloud', token)
+      console.log('connected to room', room.name)
+
+      const localParticipant = room.localParticipant
+      await localParticipant.enableCameraAndMicrophone()
+    }
+
+    connectToRoom()
 
     return () => {
-      space.off(SpaceEvent.ParticipantJoined, addParticipant);
-      space.off(SpaceEvent.ParticipantLeft, removeParticipant);
-    };
-  }, [JWT, addParticipant, removeParticipant]);
+      room.disconnect()
+    }
+  }, [token])
 
-  const join = useCallback(async () => {
-    // Join the Space
-    let localParticipant = await spaceRef.current.join();
+  const handleParticipantConnected = (participant: RemoteParticipant) => {
+    console.log("remote participant has been connected", participant)
+    setRemoteParticipants(prevParticipants => [...prevParticipants, participant])
+  }
 
-    let localDisplayTracks = await getDisplayMedia({
-      audio: false,
-      video: true,
-    });
+  const handleParticipantDisconnected = (participant: RemoteParticipant) => {
+    console.log("remote participant has been disconnected", participant)
+    setRemoteParticipants(prevParticipants => prevParticipants.filter(p => p.sid !== participant.sid))
+  }
 
-    let localTracks = await getUserMedia({
-      audio: true,
-      video: true,
-    });
+  const handleTrackSubscribed = (
+    track: RemoteTrack,
+    publication: RemoteTrackPublication,
+    participant: RemoteParticipant,
+  ) => {
+    console.log("track subscribed, remote participants", participant)
+    console.log("track subscribed, track", track)
+    if (track.kind === Track.Kind.Video || track.kind === Track.Kind.Audio) {
+      const videoElement = document.getElementById(`remoteParticipantVideo-${participant.sid}`)
+      if (videoElement) {
+        track.attach(videoElement)
+      }
+    }
+  }
 
-    await localParticipant.publishTracks([
-      ...localDisplayTracks,
-      ...localTracks,
-    ]);
+  const handleTrackUnsubscribed = (
+    track: RemoteTrack,
+    publication: RemoteTrackPublication,
+    participant: RemoteParticipant,
+  ) => {
+    console.log("track unsub, remote participants", participant)
+    track.detach()
+    const videoRef = document.getElementById(`remoteParticipantVideo-${participant.sid}`)
+    if (videoRef) {
+      videoRef.innerHTML = '' // Clear the video element
+    }
+  }
 
-    // // Set the local participant so it will be rendered
-    setLocalParticipant(localParticipant);
-  }, []);
+  const handleLocalTrackPublished = (publication: LocalTrackPublication,
+    participant: LocalParticipant) => {
+    // Perform actions or update the UI when a local track is published
+    console.log('Local track published:', participant)
+
+    const track = publication.track
+    if (track.kind === Track.Kind.Video) {
+      const videoElement = document.getElementById('localParticipantVideoId')
+      if (videoElement) {
+        track.attach(videoElement)
+      }
+    }
+  }
+
+  const handleLocalTrackUnpublished = (track: LocalTrackPublication, participant: LocalParticipant) => {
+    track.detach()
+    localParticipantVideoRef.current.innerHTML = '' // Clear the video element
+  }
+
+  const handleActiveSpeakerChange = (speakers: Participant[]) => {
+    // show UI indicators when a participant is speaking
+  }
+
+  const handleDisconnect = () => {
+    console.log('disconnected from room')
+  }
 
   return (
     <div className="App">
-      <button onClick={join} disabled={joined}>
-        Join Space
-      </button>
+      <video ref={localParticipantVideoRef} id="localParticipantVideoId"></video>
 
-      {localParticipant && (
-        <Participant
-          key={localParticipant.connectionId}
-          participant={localParticipant}
-        />
-      )}
-
-      {participants.map((participant) => {
-        return (
-          <Participant
-            key={participant.connectionId}
-            participant={participant}
-          />
-        );
-      })}
+      {remoteParticipants.map((participant) => (
+        <video key={participant.sid} id={`remoteParticipantVideo-${participant.sid}`}></video>
+      ))}
     </div>
-  );
+  )
 }
 
-export default App;
+export default App
